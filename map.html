@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <title>農產品市場位置與價格圖表</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="./css/mycss.css">
+  <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+</head>
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      scrollbar-width: none;
+    }
+
+    #map {
+      height: 500px;
+      width: 100%;
+    }
+       .banner{
+        background: linear-gradient(yellowgreen,green);
+    }
+    .text-orange{
+        color: orangered;
+    }
+
+  </style>
+</head>
+
+<body class="bg-light">
+  <div class="container-fluid banner" >
+        <div class="row">
+            <div class="col-md-4 text-white p-5">
+                <a href="./index.html" class="text-decoration-none"><h1 class="text-white">農產品行情分析平台</h1></a>
+                <p>這是一個展示農委會公開數據的即時行情查詢平台</p>
+            </div>
+            <div class="col-md-4 text-white fa-3x d-flex align-items-center">
+                    <i class="fa-solid fa-apple-whole mx-3 text-danger"></i>
+                    <i class="fa-solid fa-lemon mx-3 text-success"></i>
+                    <i class="fa-solid fa-carrot mx-3 text-orange"></i>
+                    <i class="fa-solid fa-pepper-hot mx-3 text-warning"></i>
+                </div>
+            <div class="col-md-4 d-flex align-items-center ms-auto">
+                <a href="./data.html" class="btn btn-lg btn-outline-light me-5">查看即時交易資料表</a>
+                <a href="./map.html" class="btn btn-lg btn-outline-light">查看圖表與地圖</a>
+                
+            </div>
+        </div>
+    </div>
+  <div class="container py-4">
+    <h1 class="mb-4">農產品市場位置與價格圖表</h1>
+    <form id="searchForm" class="row g-2 mb-4">
+      <div class="col-md-4">
+        <select id="cropSelect" class="form-select">
+          <option value="">請選擇作物名稱</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <select id="dateSelect" class="form-select">
+          <option value="">請選擇交易日期</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <button type="submit" class="btn btn-primary w-100">搜尋</button>
+      </div>
+    </form>
+    <div id="map"></div>
+    <div class="row">
+      <div class="col-md-6">
+        <canvas id="priceChart" height="100"></canvas>
+      </div>
+      <div class="col-md-6">
+        <canvas id="marketChart" height="100"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const marketCoords = {
+      "台北一": [25.052, 121.516],
+      "台中": [24.136, 120.686],
+      "高雄": [22.627, 120.301],
+      "板橋": [25.014, 121.468]
+    };
+
+    let rawData = [];
+    let chart;
+    let marker;
+
+    const cropSelect = document.getElementById("cropSelect");
+    const dateSelect = document.getElementById("dateSelect");
+    const form = document.getElementById("searchForm");
+
+    const map = L.map('map').setView([24.1705333, 120.610123], 8);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 300);
+
+    async function init() {
+      const res = await fetch("https://data.moa.gov.tw/Service/OpenData/FromM/FarmTransData.aspx");
+      rawData = await res.json();
+
+      const crops = new Set();
+      const dates = new Set();
+      rawData.forEach(item => {
+        if (item.作物名稱 && item.作物名稱 !== "休市") crops.add(item.作物名稱);
+        if (item.交易日期) dates.add(item.交易日期);
+      });
+
+      [...crops].sort().forEach(crop => {
+        const option = document.createElement("option");
+        option.value = crop;
+        option.textContent = crop;
+        cropSelect.appendChild(option);
+      });
+
+      [...dates].sort((a, b) => b.localeCompare(a)).forEach(date => {
+        const option = document.createElement("option");
+        option.value = date;
+        option.textContent = date;
+        dateSelect.appendChild(option);
+      });
+    }
+
+    form.addEventListener("submit", e => {
+      e.preventDefault();
+      const crop = cropSelect.value;
+      const date = dateSelect.value;
+      if (!crop || !date) return;
+      drawChartAndMap(crop, date);
+    });
+
+    function drawChartAndMap(cropName, date) {
+      const filtered = rawData.filter(item => item.作物名稱 === cropName && item.交易日期 === date);
+      const labels = [];
+      const prices = [];
+      const locations = new Map();
+
+      filtered.forEach(item => {
+        if (item.平均價 && item.交易日期) {
+          labels.push(item.交易日期);
+          prices.push(Number(item.平均價));
+        }
+        if (item.市場名稱 && item.市場名稱 !== "休市") {
+          locations.set(item.市場名稱, true);
+        }
+      });
+
+      if (chart) chart.destroy();
+      const ctx = document.getElementById("priceChart").getContext("2d");
+      chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: cropName + " 平均價",
+            data: prices,
+            borderWidth: 2,
+            fill: false,
+            tension: 0.3
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: { beginAtZero: true }
+          }
+        }
+      });
+
+      // ✅ ✅ ✅ 新增這段（插在這裡）
+      const marketPriceMap = {};
+      filtered.forEach(item => {
+        const market = item.市場名稱;
+        const price = parseFloat(item.平均價);
+        if (!market || market === "休市" || isNaN(price)) return;
+
+        if (!marketPriceMap[market]) {
+          marketPriceMap[market] = [];
+        }
+        marketPriceMap[market].push(price);
+      });
+
+      const marketLabels = Object.keys(marketPriceMap);
+      const marketAverages = marketLabels.map(market => {
+        const prices = marketPriceMap[market];
+        const sum = prices.reduce((a, b) => a + b, 0);
+        return (sum / prices.length).toFixed(2);
+      });
+
+      if (window.marketChart && typeof window.marketChart.destroy === "function") {
+        window.marketChart.destroy();
+      }
+
+      const ctx2 = document.getElementById("marketChart").getContext("2d");
+      window.marketChart = new Chart(ctx2, {
+        type: "bar",
+        data: {
+          labels: marketLabels,
+          datasets: [{
+            label: cropName + " 各市場平均價",
+            data: marketAverages,
+            backgroundColor: "rgba(255, 159, 64, 0.6)"
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: { beginAtZero: true }
+          }
+        }
+      });
+
+      // ✅ 保留這段地圖處理
+      if (marker) map.removeLayer(marker);
+      locations.forEach((_, market) => {
+        const coord = marketCoords[market];
+        if (coord) {
+          marker = L.marker(coord).addTo(map).bindPopup(`${market}<br>${cropName}`).openPopup();
+          map.setView(coord, 12);
+        }
+      });
+    }
+
+    init();
+  </script>
+</body>
+
+</html>
